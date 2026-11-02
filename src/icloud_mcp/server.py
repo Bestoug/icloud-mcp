@@ -162,10 +162,22 @@ def build_app(s: Settings):
     return mcp.http_app(path="/mcp", middleware=[Middleware(BearerAuth, token=s.access_token)])
 
 
+def drop_privileges(uid: int = 10001) -> None:
+    """Läuft der Prozess als root, auf den unprivilegierten Benutzer wechseln."""
+    import os
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        os.setgroups([])
+        os.setgid(uid)
+        os.setuid(uid)
+        os.environ["HOME"] = "/home/mcp"
+
+
 def main() -> None:
     import uvicorn
 
     s = Settings.from_env()
+    drop_privileges()
     uvicorn.run(build_app(s), host=s.host, port=s.port, proxy_headers=True, forwarded_allow_ips="*")
 
 
