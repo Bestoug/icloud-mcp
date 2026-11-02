@@ -1,7 +1,9 @@
 """MCP-Server für iCloud Mail und Kalender, abgesichert mit einem geheimen Bearer-Token."""
 from __future__ import annotations
 
+import hashlib
 import hmac
+import logging
 from typing import Annotated
 
 import anyio
@@ -15,6 +17,14 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from . import kalender as cal
 from . import mail
 from .config import Settings
+
+log = logging.getLogger("icloud_mcp.auth")
+
+
+def fingerprint(value: bytes) -> str:
+    """Kurzer, nicht umkehrbarer Fingerabdruck zum Vergleichen, ohne den Token zu loggen."""
+    return hashlib.sha256(value).hexdigest()[:6] if value else "-"
+
 
 READ = {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}
 WRITE = {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}
@@ -30,6 +40,8 @@ class BearerAuth(BaseHTTPMiddleware):
     def __init__(self, app, token: str):
         super().__init__(app)
         self._expected = token.strip().encode()
+        log.warning("Erwarteter Token: Länge %d, Fingerabdruck %s",
+                    len(self._expected), fingerprint(self._expected))
 
     @staticmethod
     def _extract(request: Request) -> str:
@@ -45,6 +57,13 @@ class BearerAuth(BaseHTTPMiddleware):
         given = self._extract(request).encode()
         if given and hmac.compare_digest(given, self._expected):
             return await call_next(request)
+        if path == "/mcp":
+            log.warning(
+                "Abgelehnt: Authorization-Header %s, X-API-Key %s, Token-Länge %d, Fingerabdruck %s",
+                "vorhanden" if "authorization" in request.headers else "fehlt",
+                "vorhanden" if "x-api-key" in request.headers else "fehlt",
+                len(given), fingerprint(given),
+            )
         if path.startswith("/.well-known/"):
             # Kein OAuth: Discovery-Anfragen bekommen ein klares 404.
             return JSONResponse({"error": "not_found"}, status_code=404)
