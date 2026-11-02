@@ -94,3 +94,14 @@ def test_auth_middleware():
                      "Accept": "application/json, text/event-stream"},
         )
         assert r.status_code == 200
+        assert client.get("/.well-known/oauth-protected-resource").status_code == 404
+
+
+def test_token_variants():
+    from icloud_mcp.server import BearerAuth
+
+    class R:
+        def __init__(self, h): self.headers = h
+    assert BearerAuth._extract(R({"authorization": "  bearer  abc "})) == "abc"
+    assert BearerAuth._extract(R({"authorization": "abc"})) == "abc"
+    assert BearerAuth._extract(R({"x-api-key": "abc"})) == "abc"

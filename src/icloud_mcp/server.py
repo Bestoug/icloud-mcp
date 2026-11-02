@@ -21,19 +21,35 @@ WRITE = {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False
 
 
 class BearerAuth(BaseHTTPMiddleware):
-    """Lässt nur Anfragen mit dem richtigen Token durch (außer /health)."""
+    """Lässt nur Anfragen mit dem richtigen Token durch (außer /health).
+
+    Akzeptiert `Authorization: Bearer <token>`, `Authorization: <token>` und `X-API-Key: <token>`,
+    jeweils ohne Rücksicht auf Leerzeichen am Rand und Groß-/Kleinschreibung von „Bearer“.
+    """
 
     def __init__(self, app, token: str):
         super().__init__(app)
-        self._expected = f"Bearer {token}".encode()
+        self._expected = token.strip().encode()
+
+    @staticmethod
+    def _extract(request: Request) -> str:
+        value = request.headers.get("authorization", "").strip()
+        if value.lower().startswith("bearer "):
+            value = value[7:].strip()
+        return value or request.headers.get("x-api-key", "").strip()
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health":
+        path = request.url.path
+        if path == "/health":
             return PlainTextResponse("ok")
-        given = request.headers.get("authorization", "").encode()
-        if not hmac.compare_digest(given, self._expected):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await call_next(request)
+        given = self._extract(request).encode()
+        if given and hmac.compare_digest(given, self._expected):
+            return await call_next(request)
+        if path.startswith("/.well-known/"):
+            # Kein OAuth: Discovery-Anfragen bekommen ein klares 404.
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers={"WWW-Authenticate": "Bearer"})
 
 
 def build_server(s: Settings) -> FastMCP:
