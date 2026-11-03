@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import caldav
 from icalendar import Calendar, Event
 
+from . import schutz
 from .config import Settings
 
 
@@ -49,16 +50,22 @@ def _iso(value) -> str | None:
 
 
 def event_to_dict(component, calendar_name: str) -> dict:
+    title = schutz.feld(str(component.get("SUMMARY", "")))
+    location = schutz.feld(str(component.get("LOCATION", ""))) or None
+    notes = schutz.feld(str(component.get("DESCRIPTION", ""))) or None
+    verdacht = schutz.verdacht(title, location, notes)
     return {
+        **({"sicherheit": {"verdacht_auf_prompt_injection": verdacht,
+                           "hinweis": schutz.HINWEIS}} if verdacht else {}),
         "uid": str(component.get("UID", "")),
         "calendar": calendar_name,
-        "title": str(component.get("SUMMARY", "")),
+        "title": title,
         "start": _iso(component.get("DTSTART")),
         "end": _iso(component.get("DTEND")),
         "all_day": not isinstance(component.get("DTSTART").dt, dt.datetime)
         if component.get("DTSTART") else False,
-        "location": str(component.get("LOCATION", "")) or None,
-        "notes": str(component.get("DESCRIPTION", "")) or None,
+        "location": location,
+        "notes": notes,
         "recurring": component.get("RRULE") is not None,
     }
 

@@ -7,7 +7,6 @@ from __future__ import annotations
 import datetime as dt
 import email
 import email.policy
-import re
 from contextlib import contextmanager
 from email.message import EmailMessage
 from email.utils import format_datetime, getaddresses, make_msgid, parsedate_to_datetime
@@ -15,6 +14,7 @@ from typing import Iterator
 
 from imapclient import IMAPClient
 
+from . import schutz
 from .config import Settings
 
 MAX_BODY_CHARS = 20000
@@ -45,8 +45,11 @@ def _addresses(value: str) -> list[str]:
     return [f"{n} <{a}>" if n else a for n, a in getaddresses([value]) if a]
 
 
-def _text_body(msg: email.message.Message) -> str:
-    """Bevorzugt text/plain; fällt auf von Tags befreites HTML zurück."""
+def _text_body(msg: email.message.Message) -> tuple[str, int]:
+    """Bevorzugt text/plain; fällt auf den sichtbaren Text des HTML zurück.
+
+    Gibt zusätzlich die Anzahl versteckter HTML-Zeichen zurück, die weggelassen wurden.
+    """
     plain, html = None, None
     for part in msg.walk() if msg.is_multipart() else [msg]:
         if part.get_content_disposition() == "attachment":
@@ -62,14 +65,10 @@ def _text_body(msg: email.message.Message) -> str:
         elif ctype == "text/html" and html is None:
             html = content
     if plain:
-        return plain.strip()
+        return plain.strip(), 0
     if html:
-        text = re.sub(r"(?is)<(script|style).*?</\1>", "", html)
-        text = re.sub(r"(?i)<br\s*/?>|</p>|</div>", "\n", text)
-        text = re.sub(r"<[^>]+>", "", text)
-        text = re.sub(r"\n\s*\n+", "\n\n", text)
-        return text.strip()
-    return ""
+        return schutz.html_zu_text(html)
+    return "", 0
 
 
 def _attachments(msg: email.message.Message) -> list[dict]:
@@ -91,16 +90,28 @@ def parse_message(raw: bytes) -> dict:
         date_iso = parsedate_to_datetime(date).isoformat() if date else None
     except (TypeError, ValueError):
         date_iso = date
-    body = _text_body(msg)
+    body, versteckt = _text_body(msg)
+    body, unsichtbar = schutz.unsichtbares_entfernen(body)
+    subject_roh = _decode(msg.get("Subject"))
+    subject = schutz.feld(subject_roh)
+    unsichtbar += len(subject_roh) - len(subject)
     truncated = len(body) > MAX_BODY_CHARS
+    body = body[:MAX_BODY_CHARS]
+    verdacht = schutz.verdacht(subject, body)
     return {
-        "subject": _decode(msg.get("Subject")),
+        "hinweis": schutz.HINWEIS,
+        "sicherheit": {
+            "verdacht_auf_prompt_injection": verdacht,
+            "versteckter_html_text_entfernt_zeichen": versteckt,
+            "unsichtbare_zeichen_entfernt": unsichtbar,
+        },
+        "subject": subject,
         "from": _addresses(str(msg.get("From", ""))),
         "to": _addresses(str(msg.get("To", ""))),
         "cc": _addresses(str(msg.get("Cc", ""))),
         "date": date_iso,
         "message_id": str(msg.get("Message-ID", "")),
-        "body": body[:MAX_BODY_CHARS],
+        "body": schutz.einpacken(body),
         "body_truncated": truncated,
         "attachments": _attachments(msg),
     }
@@ -167,7 +178,7 @@ def search(s: Settings, folder: str, criteria: list, limit: int) -> list[dict]:
                 "folder": folder,
                 "date": env.date.isoformat() if env.date else None,
                 "from": sender,
-                "subject": _decode(env.subject),
+                "subject": schutz.feld(_decode(env.subject)),
                 "unread": "\\Seen" not in flags,
                 "flagged": "\\Flagged" in flags,
                 "size_bytes": item.get(b"RFC822.SIZE"),
@@ -188,7 +199,19 @@ def read(s: Settings, folder: str, uid: int, mark_as_read: bool) -> dict:
         return result
 
 
+PAPIERKORB = {"trash", "deleted messages", "gelöschte objekte", "papierkorb", "deleted items", "bin"}
+
+
+def ist_papierkorb(name: str) -> bool:
+    return name.strip().strip("/").split("/")[-1].lower() in PAPIERKORB
+
+
 def move(s: Settings, folder: str, uids: list[int], target: str) -> dict:
+    if ist_papierkorb(target) and not s.trash_erlaubt:
+        raise PermissionError(
+            "Verschieben in den Papierkorb ist gesperrt (Schutz davor, dass Warnmails "
+            "versteckt werden). Erlaubt sind z. B. Junk und Archive. Freischalten nur über "
+            "die Umgebungsvariable MAIL_TRASH_ERLAUBT=1 auf dem Server.")
     with connect(s) as c:
         if not c.folder_exists(target):
             raise ValueError(f"Zielordner {target!r} gibt es nicht")

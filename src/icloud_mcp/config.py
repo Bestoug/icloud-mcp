@@ -22,6 +22,7 @@ class Settings:
     imap_port: int = 993
     caldav_url: str = "https://caldav.icloud.com"
     drafts_folder: str = "Drafts"
+    trash_erlaubt: bool = False   # Verschieben in den Papierkorb erlauben (Standard: nein)
     host: str = "0.0.0.0"
     port: int = 8000
 
@@ -36,5 +37,6 @@ class Settings:
             access_token=token,
             timezone=os.environ.get("TZ", "Europe/Berlin"),
             drafts_folder=os.environ.get("DRAFTS_FOLDER", "Drafts"),
+            trash_erlaubt=os.environ.get("MAIL_TRASH_ERLAUBT", "").strip().lower() in ("1", "true", "ja"),
             port=int(os.environ.get("PORT", "8000")),
         )
