@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from . import kalender as cal
 from . import mail
 from .config import Settings
+from .retry import with_retry
 
 log = logging.getLogger("icloud_mcp.auth")
 
@@ -82,8 +83,15 @@ def build_server(s: Settings) -> FastMCP:
         ),
     )
 
-    async def run(fn, *args):
-        return await anyio.to_thread.run_sync(lambda: fn(*args))
+    async def run(fn, *args, retry: bool = True):
+        """Führt den iCloud-Aufruf im Hintergrund-Thread aus.
+
+        Lesen und wiederholbare Änderungen (markieren, Termin ändern) werden bei
+        Netzwerk-Aussetzern automatisch bis zu dreimal versucht. Anlegen und
+        Verschieben nicht (retry=False), damit nichts doppelt passiert.
+        """
+        return await with_retry(lambda: anyio.to_thread.run_sync(lambda: fn(*args)),
+                                name=fn.__name__, retry=retry, sleep=anyio.sleep)
 
     # ---------- Mail ----------
     @mcp.tool(annotations={**READ, "title": "Mail-Ordner auflisten"})
@@ -119,7 +127,7 @@ def build_server(s: Settings) -> FastMCP:
     @mcp.tool(annotations={**WRITE, "title": "Mails verschieben"})
     async def mail_move(uids: list[int], target_folder: str, folder: str = "INBOX") -> dict:
         """Verschiebt Mails in einen anderen Ordner (z. B. Archive). Löscht nichts endgültig."""
-        return await run(mail.move, s, folder, uids, target_folder)
+        return await run(mail.move, s, folder, uids, target_folder, retry=False)
 
     @mcp.tool(annotations={**WRITE, "idempotentHint": True, "title": "Mails markieren"})
     async def mail_mark(
@@ -146,7 +154,7 @@ def build_server(s: Settings) -> FastMCP:
             original = await run(mail.read, s, reply_to_folder, reply_to_uid, False)
             reply_id = original.get("message_id") or None
         msg = mail.build_draft(s, to, subject, body, cc, reply_id)
-        return await run(mail.create_draft, s, msg)
+        return await run(mail.create_draft, s, msg, retry=False)
 
     # ---------- Kalender ----------
     @mcp.tool(annotations={**READ, "title": "Kalender auflisten"})
@@ -174,7 +182,8 @@ def build_server(s: Settings) -> FastMCP:
         notes: str | None = None,
     ) -> dict:
         """Legt einen neuen Termin an."""
-        return await run(cal.create_event, s, calendar, title, start, end, all_day, location, notes)
+        return await run(cal.create_event, s, calendar, title, start, end, all_day, location, notes,
+                         retry=False)
 
     @mcp.tool(annotations={**WRITE, "idempotentHint": True, "title": "Termin ändern"})
     async def calendar_update_event(
