@@ -83,6 +83,55 @@ def _attachments(msg: email.message.Message) -> list[dict]:
     return out
 
 
+MAX_ANHANG_ZEICHEN = 20000
+_TEXT_ENDUNGEN = (".ics", ".txt", ".csv", ".vcf", ".md", ".json", ".xml")
+
+
+def _ist_textanhang(part: email.message.Message) -> bool:
+    name = (_decode(part.get_filename()) or "").lower()
+    return part.get_content_maintype() == "text" or name.endswith(_TEXT_ENDUNGEN)
+
+
+def attachment_text(raw: bytes, name: str | None) -> dict:
+    """Liefert den Inhalt eines Text-Anhangs (z. B. .ics), eingepackt als fremder Inhalt."""
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    anhaenge = [p for p in msg.walk() if p.get_content_disposition() == "attachment"]
+    if name:
+        anhaenge = [p for p in anhaenge if _decode(p.get_filename()) == name]
+    textanhaenge = [p for p in anhaenge if _ist_textanhang(p)]
+    if not textanhaenge:
+        raise ValueError("Kein passender Text-Anhang (nur Text, .ics, .csv usw.; keine PDFs/Bilder)")
+    part = textanhaenge[0]
+    payload = part.get_payload(decode=True) or b""
+    text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+    text = text.replace("\r\n ", "").replace("\n ", "")  # gefaltete ICS-Zeilen zusammenfügen
+    text, unsichtbar = schutz.unsichtbares_entfernen(text)
+    truncated = len(text) > MAX_ANHANG_ZEICHEN
+    text = text[:MAX_ANHANG_ZEICHEN]
+    return {
+        "hinweis": schutz.HINWEIS,
+        "sicherheit": {
+            "verdacht_auf_prompt_injection": schutz.verdacht(text),
+            "unsichtbare_zeichen_entfernt": unsichtbar,
+        },
+        "name": _decode(part.get_filename()),
+        "type": part.get_content_type(),
+        "inhalt": schutz.einpacken(text),
+        "inhalt_gekuerzt": truncated,
+    }
+
+
+def read_attachment(s: Settings, folder: str, uid: int, name: str | None) -> dict:
+    with connect(s) as c:
+        c.select_folder(folder, readonly=True)
+        data = c.fetch([uid], ["BODY.PEEK[]"])
+        if uid not in data:
+            raise ValueError(f"Keine Mail mit UID {uid} in {folder}")
+        result = attachment_text(data[uid][b"BODY[]"], name)
+        result.update({"uid": uid, "folder": folder})
+        return result
+
+
 def parse_message(raw: bytes) -> dict:
     msg = email.message_from_bytes(raw, policy=email.policy.default)
     date = msg.get("Date")

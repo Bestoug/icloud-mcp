@@ -136,6 +136,15 @@ def build_server(s: Settings) -> FastMCP:
         """Liest eine Mail vollständig (Text, Empfänger, Anhänge-Liste)."""
         return await run(mail.read, s, folder, uid, mark_as_read)
 
+    @mcp.tool(annotations={**READ, "title": "Text-Anhang lesen"})
+    async def mail_attachment(
+        uid: int,
+        folder: str = "INBOX",
+        name: Annotated[str | None, Field(description="Dateiname des Anhangs; leer = erster Text-Anhang")] = None,
+    ) -> dict:
+        """Liest einen Text-Anhang einer Mail (z. B. .ics-Termin der Bahn, .csv, .txt). Keine PDFs/Bilder."""
+        return await run(mail.read_attachment, s, folder, uid, name)
+
     @mcp.tool(annotations={**WRITE, "title": "Mails verschieben"})
     async def mail_move(uids: list[int], target_folder: str, folder: str = "INBOX") -> dict:
         """Verschiebt Mails in einen anderen Ordner (z. B. Archive, Junk). Löscht nichts endgültig.

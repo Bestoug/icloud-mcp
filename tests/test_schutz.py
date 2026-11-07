@@ -64,3 +64,26 @@ def test_papierkorb_gesperrt():
     for ziel in ("Trash", "Deleted Messages", "INBOX/Papierkorb"):
         with pytest.raises(PermissionError):
             mail.move(S, "INBOX", [1], ziel)
+
+
+def test_offenes_tag_im_versteckten_block_versteckt_nicht_den_rest():
+    # Vorschau-Zeile mit nicht geschlossenem <p> (so bei der DB-Buchungsbestätigung)
+    html = ('<div style="display:none;max-height:0">Vorschau<p>Ihre Buchung</div>'
+            '<table><tr><td>Kiel Hbf 14:05 → Hannover Hbf 17:02</td></tr></table>')
+    text, versteckt = schutz.html_zu_text(html)
+    assert "Kiel Hbf 14:05" in text
+    assert "Vorschau" not in text and versteckt > 0
+
+
+def test_ics_anhang_lesbar():
+    m = EmailMessage()
+    m["Subject"], m["From"], m["To"] = "Buchung", "bahn@example.com", "ich@example.com"
+    m.set_content("Siehe Anhang")
+    ics = ("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Kiel Hbf → Hannover\r\n"
+           "DTSTART:20261109T140500\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    m.add_attachment(ics.encode(), maintype="text", subtype="calendar", filename="fahrt.ics")
+    m.add_attachment(b"PDF", maintype="application", subtype="pdf", filename="ticket.pdf")
+    r = mail.attachment_text(m.as_bytes(), None)
+    assert r["name"] == "fahrt.ics" and "DTSTART:20261109T140500" in r["inhalt"]
+    with pytest.raises(ValueError):
+        mail.attachment_text(m.as_bytes(), "ticket.pdf")

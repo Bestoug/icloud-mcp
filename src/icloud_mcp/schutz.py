@@ -63,7 +63,8 @@ _VERSTECKT_STIL = re.compile(
     r"(?<![-\w])(height|width)\s*:\s*0(px)?\s*(;|$)",
     re.IGNORECASE,
 )
-_LEERE_TAGS = {"br", "img", "hr", "meta", "link", "input", "wbr", "col", "area", "base", "source"}
+_LEERE_TAGS = {"br", "img", "hr", "meta", "link", "input", "wbr", "col", "area", "base", "source",
+               "embed", "param", "track"}
 _UMBRUCH = {"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table", "blockquote"}
 
 
@@ -79,7 +80,7 @@ class _SichtbarerText(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.teile: list[str] = []
-        self.stapel: list[bool] = []   # True = dieses Element ist versteckt
+        self.stapel: list[tuple[str, bool]] = []   # (Tag, versteckt?)
         self.versteckt = 0             # Anzahl offener versteckter Elemente
         self.unterdrueckt = 0          # Zeichen versteckten Texts
 
@@ -97,7 +98,7 @@ class _SichtbarerText(HTMLParser):
         if tag in _LEERE_TAGS:
             return
         h = self._ist_versteckt(tag, attrs)
-        self.stapel.append(h)
+        self.stapel.append((tag, h))
         if h:
             self.versteckt += 1
 
@@ -106,10 +107,18 @@ class _SichtbarerText(HTMLParser):
             self.teile.append("\n")
 
     def handle_endtag(self, tag):
-        if tag in _LEERE_TAGS or not self.stapel:
+        # Bis zum passenden offenen Tag schließen. Ohne passendes Gegenstück wird das
+        # End-Tag ignoriert, damit ein nicht geschlossenes <p> o. Ä. in einem versteckten
+        # Block nicht den Rest der Mail unsichtbar macht.
+        if tag in _LEERE_TAGS:
             return
-        if self.stapel.pop():
-            self.versteckt -= 1
+        idx = next((i for i in range(len(self.stapel) - 1, -1, -1) if self.stapel[i][0] == tag), None)
+        if idx is None:
+            return
+        for _t, h in self.stapel[idx:]:
+            if h:
+                self.versteckt -= 1
+        del self.stapel[idx:]
         if tag in _UMBRUCH and not self.versteckt:
             self.teile.append("\n")
 
