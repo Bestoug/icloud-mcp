@@ -39,11 +39,11 @@ def test_imap_abort_is_retried():
     assert calls["n"] == 3
 
 
-def test_gives_up_after_three_attempts():
-    call, calls = _flaky([OSError(90, "x"), OSError(90, "x"), OSError(90, "x")])
+def test_gives_up_after_four_attempts():
+    call, calls = _flaky([OSError(90, "x")] * 4)
     with pytest.raises(OSError):
         run(with_retry(call, "test", sleep=_no_sleep))
-    assert calls["n"] == 3
+    assert calls["n"] == 4
 
 
 def test_real_errors_are_not_retried():

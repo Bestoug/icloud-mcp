@@ -17,8 +17,10 @@ log = logging.getLogger("icloud_mcp.retry")
 
 T = TypeVar("T")
 
-# Pausen zwischen den Versuchen in Sekunden: 3 Versuche insgesamt.
-DELAYS = (1.0, 3.0)
+# Pausen zwischen den Versuchen in Sekunden: 4 Versuche über rund 12 s.
+# Am 07.11.2026 schlugen drei Versuche innerhalb von 4 s fehl, kurz danach lief
+# derselbe Aufruf wieder; die längere letzte Pause überbrückt solche Aussetzer.
+DELAYS = (1.0, 3.0, 8.0)
 
 
 def _optional_transient() -> tuple[type[BaseException], ...]:

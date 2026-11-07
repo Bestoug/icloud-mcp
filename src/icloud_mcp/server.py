@@ -99,7 +99,7 @@ def build_server(s: Settings) -> FastMCP:
         """Führt den iCloud-Aufruf im Hintergrund-Thread aus.
 
         Lesen und wiederholbare Änderungen (markieren, Termin ändern) werden bei
-        Netzwerk-Aussetzern automatisch bis zu dreimal versucht. Anlegen und
+        Netzwerk-Aussetzern automatisch bis zu viermal versucht. Anlegen und
         Verschieben nicht (retry=False), damit nichts doppelt passiert.
         """
         return await with_retry(lambda: anyio.to_thread.run_sync(lambda: fn(*args)),
