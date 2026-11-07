@@ -57,12 +57,23 @@ _VERDACHT = [
 ]
 _VERDACHT_RE = [(re.compile(p, re.IGNORECASE | re.DOTALL), name) for p, name in _VERDACHT]
 
+# Stile, die ein Element samt Inhalt sicher unsichtbar machen (Kinder können das nicht aufheben)
 _VERSTECKT_STIL = re.compile(
-    r"display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?![.\d]*[1-9])|"
-    r"opacity\s*:\s*0(?![.\d]*[1-9])|max-height\s*:\s*0(?![.\d]*[1-9])|"
-    r"(?<![-\w])(height|width)\s*:\s*0(px)?\s*(;|$)",
+    r"display\s*:\s*none|opacity\s*:\s*0(?![.\d]*[1-9])",
     re.IGNORECASE,
 )
+# Höhe/Breite 0 versteckt nur zusammen mit overflow:hidden (sonst ragt der Inhalt sichtbar heraus)
+_NULL_MASS = re.compile(
+    r"(?<![-\w])(max-height|height|width)\s*:\s*0(px|pt|em|rem|%)?\s*(!important)?\s*(;|$)",
+    re.IGNORECASE,
+)
+_OVERFLOW_HIDDEN = re.compile(r"overflow(-x|-y)?\s*:\s*hidden", re.IGNORECASE)
+# Schriftgröße und visibility werden vererbt, Kinder dürfen sie wieder aufheben.
+# Mail-Vorlagen (z. B. DB, MJML) setzen font-size:0 auf Rahmen-Tabellen gegen Leerraum
+# und geben dem Inhalt darin wieder eine normale Größe – das ist sichtbarer Text.
+_FONT_SIZE = re.compile(r"(?<![-\w])font-size\s*:\s*([\d.]+)", re.IGNORECASE)
+_FONT_KURZ_NULL = re.compile(r"(?<![-\w])font\s*:\s*0(px|pt|em|rem|%)?\s*[/;\s]", re.IGNORECASE)
+_VISIBILITY = re.compile(r"visibility\s*:\s*(hidden|collapse|visible)", re.IGNORECASE)
 _LEERE_TAGS = {"br", "img", "hr", "meta", "link", "input", "wbr", "col", "area", "base", "source",
                "embed", "param", "track"}
 _UMBRUCH = {"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table", "blockquote"}
@@ -80,31 +91,71 @@ class _SichtbarerText(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.teile: list[str] = []
-        self.stapel: list[tuple[str, bool]] = []   # (Tag, versteckt?)
-        self.versteckt = 0             # Anzahl offener versteckter Elemente
+        # (Tag, sicher versteckt?, Schrift 0 geerbt?, visibility hidden geerbt?)
+        self.stapel: list[tuple[str, bool, bool, bool]] = []
+        self.versteckt = 0             # Anzahl offener sicher versteckter Elemente
         self.unterdrueckt = 0          # Zeichen versteckten Texts
 
-    def _ist_versteckt(self, tag: str, attrs) -> bool:
+    def _zustand(self) -> tuple[bool, bool]:
+        if self.stapel:
+            return self.stapel[-1][2], self.stapel[-1][3]
+        return False, False
+
+    def _unsichtbar(self) -> bool:
+        schrift0, vis = self._zustand()
+        return bool(self.versteckt) or schrift0 or vis
+
+    @staticmethod
+    def _ist_versteckt(tag: str, a: dict) -> bool:
         if tag in ("script", "style", "head", "title", "template", "noscript"):
             return True
-        a = {k.lower(): (v or "") for k, v in attrs}
         if "hidden" in a or a.get("aria-hidden", "").lower() == "true":
             return True
-        return bool(_VERSTECKT_STIL.search(a.get("style", "")))
+        stil = a.get("style", "")
+        if _VERSTECKT_STIL.search(stil):
+            return True
+        return bool(_NULL_MASS.search(stil) and _OVERFLOW_HIDDEN.search(stil))
 
     def handle_starttag(self, tag, attrs):
-        if tag in _UMBRUCH and not self.versteckt:
+        if tag == "body":
+            # Nicht geschlossenes <head> darf nicht die ganze Mail verstecken
+            self._schliessen("head")
+        if tag in _UMBRUCH and not self._unsichtbar():
             self.teile.append("\n")
         if tag in _LEERE_TAGS:
             return
-        h = self._ist_versteckt(tag, attrs)
-        self.stapel.append((tag, h))
+        a = {k.lower(): (v or "") for k, v in attrs}
+        stil = a.get("style", "")
+        schrift0, vis = self._zustand()
+        m = _FONT_SIZE.search(stil)
+        if m:
+            try:
+                schrift0 = float(m.group(1)) == 0
+            except ValueError:
+                pass
+        elif _FONT_KURZ_NULL.search(stil + ";"):
+            schrift0 = True
+        v = _VISIBILITY.search(stil)
+        if v:
+            vis = v.group(1).lower() != "visible"
+        h = self._ist_versteckt(tag, a)
+        self.stapel.append((tag, h, schrift0, vis))
         if h:
             self.versteckt += 1
 
     def handle_startendtag(self, tag, attrs):
-        if tag in _UMBRUCH and not self.versteckt:
+        if tag in _UMBRUCH and not self._unsichtbar():
             self.teile.append("\n")
+
+    def _schliessen(self, tag) -> bool:
+        idx = next((i for i in range(len(self.stapel) - 1, -1, -1) if self.stapel[i][0] == tag), None)
+        if idx is None:
+            return False
+        for eintrag in self.stapel[idx:]:
+            if eintrag[1]:
+                self.versteckt -= 1
+        del self.stapel[idx:]
+        return True
 
     def handle_endtag(self, tag):
         # Bis zum passenden offenen Tag schließen. Ohne passendes Gegenstück wird das
@@ -112,18 +163,11 @@ class _SichtbarerText(HTMLParser):
         # Block nicht den Rest der Mail unsichtbar macht.
         if tag in _LEERE_TAGS:
             return
-        idx = next((i for i in range(len(self.stapel) - 1, -1, -1) if self.stapel[i][0] == tag), None)
-        if idx is None:
-            return
-        for _t, h in self.stapel[idx:]:
-            if h:
-                self.versteckt -= 1
-        del self.stapel[idx:]
-        if tag in _UMBRUCH and not self.versteckt:
+        if self._schliessen(tag) and tag in _UMBRUCH and not self._unsichtbar():
             self.teile.append("\n")
 
     def handle_data(self, data):
-        if self.versteckt:
+        if self._unsichtbar():
             self.unterdrueckt += len(data.strip())
         else:
             self.teile.append(data)

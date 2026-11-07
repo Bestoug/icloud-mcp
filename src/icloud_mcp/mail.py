@@ -64,7 +64,7 @@ def _text_body(msg: email.message.Message) -> tuple[str, int]:
             plain = content
         elif ctype == "text/html" and html is None:
             html = content
-    if plain:
+    if plain and plain.strip():
         return plain.strip(), 0
     if html:
         return schutz.html_zu_text(html)
